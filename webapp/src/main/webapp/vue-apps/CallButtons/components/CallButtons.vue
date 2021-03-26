@@ -151,24 +151,51 @@ export default {
       const thevue = this;
       try {
         if (context && context.details && this.providersButton.length === 0) {
-          const callButtons = [];
           context.parentClasses = this.parentClass;
           webConferencing.getAllProviders().then(providers => {
-            providers.map(provider => {
+            const callButtons = [];
+            const callPermissions = [];
+            providers.forEach(provider => {
+              // If provider is initialized - it is activated for use in the Web Conferencing
               if (provider.isInitialized) {
-                callButtons.push(provider.callButton(context));
+                // Check if the current user can call to the target context (e.g. has the target permissions to use this provider)
+                const permission = context.canCall(provider.getType());
+                callPermissions.push(permission);
+                permission.then(() => {
+                  // User has permissions to use this provider - render the button
+                  // By checking here we will invoke only allowed provider (better client perf).
+                  callButtons.push(provider.callButton(context));
+                }).catch(() => {
+                  // User has no permissions to use this privider or an error prevents him from using it - skip the button.
+                  // TODO #1 But if we will need to render a button as blocked for a forbidden case,
+                  // then mark the button promise here as forbidden and do the rendering below in Promise.allSettled(callButtons).
+                  // TODO #2 Alternativelly it could be possible to let a provider implement rendering of the blocked button
+                  // by checking context.canCall() in its code - but this way it will be in hands of the provider
+                  // to control actual permissions and behavioir may not be the same for all providers as result.
+                  //const button = provider.callButton(context);
+                  //button.isForbidden = true;
+                  //callButtons.push(button);
+                });
               }
             });
-            Promise.allSettled(callButtons).then(resCallButtons => {
-              resCallButtons.forEach(button => {
-                if (button.status === "fulfilled") {
-                  this.providersButton.push(button.value);
-                  if (button.value.$data) {
-                    button.value.$data.header = "CALL";
+            Promise.allSettled(callPermissions).then(() => {
+              Promise.allSettled(callButtons).then(resCallButtons => {
+                resCallButtons.forEach(button => {
+                  if (button.status === "fulfilled") {
+                    // Provider's button is ready - add it to the container in this.providersButton.
+                    // TODO #1 If we need render a button for forbidden user, check isForbidden here
+                    // and block the button by a CSS of its container.
+                    //if (button.isForbidden) {
+                      // apply blocking CSS/JS to the button.value element or Vue comp (detect this via 'instanceof Vue')
+                    //}
+                    this.providersButton.push(button.value);
+                    if (button.value.$data) {
+                      button.value.$data.header = "CALL";
+                    }
                   }
-                }
+                });
+                thevue.createButtons();
               });
-              thevue.createButtons();
             });
           });
         } else if (context && !context.details) {

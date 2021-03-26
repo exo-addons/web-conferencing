@@ -18,6 +18,8 @@
  */
 package org.exoplatform.webconferencing;
 
+import java.util.Collections;
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -30,6 +32,9 @@ import java.util.Locale;
  */
 public class CallProviderConfiguration {
 
+  /** The Constant ALL_PERMISSIONS - all users permitted by default. */
+  public static final List<String> ALL_PERMISSIONS = Collections.singletonList(WebConferencingService.ALL_USERS);
+  
   /**
    * From provider.
    *
@@ -44,6 +49,7 @@ public class CallProviderConfiguration {
     conf.setDescription(provider.getDescription(locale));
     conf.setType(provider.getType());
     conf.setLogEnabled(provider.isLogEnabled());
+    conf.setPermissions(ALL_PERMISSIONS);
     return conf;
   }
 
@@ -55,6 +61,9 @@ public class CallProviderConfiguration {
 
   /** The description. */
   protected String  description;
+
+  /** The permissions. */
+  protected List<String> permissions;
 
   /** The active. */
   protected boolean active;
@@ -152,4 +161,21 @@ public class CallProviderConfiguration {
     this.description = description;
   }
 
+  /**
+   * Gets permissions.
+   *
+   * @return the permissions
+   */
+  public List<String> getPermissions() {
+    return permissions;
+  }
+
+  /**
+   * Sets permissions.
+   *
+   * @param permissions the permissions
+   */
+  public void setPermissions(List<String> permissions) {
+      this.permissions = permissions;
+  }
 }

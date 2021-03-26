@@ -717,6 +717,27 @@
 		});
 		return initRequest(request);
 	};
+
+  var getProviderPermissions = function(type) {
+    var request = $.ajax({
+      async : true,
+      type : "GET",
+      url : prefixUrl + "/portal/rest/webconferencing/provider/" + type + "/permissions",
+    });
+    return initRequest(request);
+  };
+  
+  var postProviderPermissions = function(type, permissions) {
+    var request = $.ajax({
+      async : true,
+      type : "POST",
+      url : prefixUrl + "/portal/rest/webconferencing/provider/" + type + "/permissions",
+      data : {
+        permissions : permissions
+      }
+    });
+    return initRequest(request);
+  };
 	
 	var getUserStatus = function(userId) {
 		var request = $.ajax({
@@ -778,7 +799,10 @@
 					var data = $.Deferred();
 					data.resolve([], context.space.id, context.space.title);
 					return data.promise();
-				}
+				},
+        canCall: function() {
+          return $.Deferred().resolve().promise();
+        }
 			};
 			if (currentSpaceId) {
 				context.spaceId = currentSpaceId; 
@@ -821,20 +845,25 @@
 				provider.isInitialized = false;
 				initializer.progress(provider); // here is a provider that has a configuration
 				if (conf.active) {
-					if (provider.init && provider.hasOwnProperty("init")) {
-						provider.init(initContext()).done(function() {
-							provider.isInitialized = true;
-							log.debug("Initialized call provider: " + provider.getType());
-							initializer.resolve(provider, true);
-						}).fail(function() {
-							log.debug("Skipped or cannot initialize call provider: " + provider.getType());
-							initializer.resolve(provider, false);
-						});
-					} else {
-						log.debug("Marked call provider as Initialized: " + provider.getType());
-						provider.isInitialized = true;
-						initializer.resolve(provider, true);
-					}
+					self.hasPermissions(currentUser.id, provider.getType()).then(() => {
+					  if (provider.init && provider.hasOwnProperty("init")) {
+					    provider.init(initContext()).then(() => {
+					      provider.isInitialized = true;
+					      log.debug("Initialized call provider: " + provider.getType());
+					      initializer.resolve(provider, true);
+					    }).catch(() => {
+					      log.debug("Skipped or cannot initialize call provider: " + provider.getType());
+					      initializer.resolve(provider, false);
+					    });
+					  } else {
+					    log.debug("Marked call provider as Initialized: " + provider.getType());
+					    provider.isInitialized = true;
+					    initializer.resolve(provider, true);
+					  }
+					}).catch(() => {
+					  log.debug("CANCELED initialization of not permitted call provider '" + provider.getType() + "'");
+					  initializer.resolve(provider, false);
+					});
 				} else {
 					log.debug("CANCELED initialization of not active call provider '" + provider.getType() + "'");
 					initializer.resolve(provider, false);
@@ -932,6 +961,9 @@
           isWindowsMobile: isWindowsMobile
         };
       }
+      context.canCall = function() {
+        return $.Deferred().resolve().promise();
+      }
       return context;
     };
     
@@ -1013,6 +1045,9 @@
           isWindowsMobile: isWindowsMobile
         };
       }
+      context.canCall = function() {
+        return $.Deferred().resolve().promise();
+      }
       return context;
     };
 		
@@ -1033,7 +1068,10 @@
 						log.trace("Error getting user info " + userId + " for user context", err);
 					});
 					return user;
-				}
+				},
+        canCall: function(providerType) {
+          return self.hasPermissions(userId, providerType);
+        }
 			};
 			return context;
 		};
@@ -1055,7 +1093,10 @@
 			  		log.trace("Error getting space info " + spaceId + " for space context", err);
 					});	
 					return space;
-				}
+				},
+        canCall: function() {
+          return $.Deferred().resolve().promise();
+        }
 			};
 			return context;
 		};
@@ -1078,6 +1119,9 @@
             log.trace("Error getting space event info " + spaceId + " for space event context", err);
           });
           return space;
+        },
+        canCall: function() {
+          return $.Deferred().resolve().promise();
         }
       };
       return context;
@@ -1153,6 +1197,9 @@
 					        this.unsubscribe(subscriptionHandle);
 					    }
 						}
+
+						// XXX Fake subscription to make eXo Comet to work with RPC
+						cometd.subscribe("/eXo/Application/WebConferencing", () => {}, cometdContext);
 						
 						// Check if need core log remote spooling. Cometd required also for remote logger.
 						if (providersConfig && cometd) {
@@ -1327,6 +1374,45 @@
 				return null;
 			}
 		};
+    
+    /**
+     * Find a call ID by given call link (URL) and a provider. 
+     * If no provider given, this method will go over all providers to find a first matching call.
+     */
+    this.findCallId = function(link, providerName) {
+      var process = $.Deferred();
+      function findProviderCallId(link, provider) {
+        if (provider.isInitialized && provider.linkSupported && provider.findCallId && provider.hasOwnProperty("findCallId")) {
+          return provider.findCallId(link);
+        }
+        return null;
+      }
+      if (providerName && typeof providerName === "string") {
+        self.getProvider(providerName).then(provider => {
+          const callId = findProviderCallId(link, provider);
+          if (callId) {
+            process.resolve(callId);
+          } else {
+            process.reject("Cannot find call ID for link: " + link + " and provider: " + providerName);
+          }
+        }).catch(err => process.reject(err));
+      } else {
+        self.getAllProviders().then(providers => {
+          let callId = null; 
+          for (const provider of providers) {
+            callId = findProviderCallId(link, provider);
+            if (callId) {
+              process.resolve(callId);
+              break;
+            }
+          }
+          if (!callId) {
+            process.reject("Cannot find call ID for link: " + link);
+          }
+        }).catch(err => process.reject(err));
+      }
+      return process.promise();
+    };
 		
 		// TODO move these calls to CometD
 		this.getUserInfo = getUserInfoReq; 
@@ -1359,44 +1445,36 @@
 		};
     
     /**
-     * Find a call ID by given call link (URL) and a provider. 
-     * If no provider given, this method will go over all providers to find a first matching call.
+     * Check if an user has permissions to use a given provider.
      */
-    this.findCallId = function(link, providerName) {
-      var process = $.Deferred();
-      function findProviderCallId(link, provider) {
-        if (provider.isInitialized && provider.linkSupported && provider.findCallId && provider.hasOwnProperty("findCallId")) {
-          return provider.findCallId(link);
-        }
-        return null;
-      }
-      if (providerName && typeof providerName === "string") {
-        self.getProvider(providerName).then(provider => {
-          const callId = findProviderCallId(link, provider);
-          if (callId) {
-            process.resolve(callId);
-          } else {
-            process.reject("Cannot find call ID for link: " + link + " and provider: " + providerName);
-          }
-        }).catch(err => process.fail(err));
-      } else {
-        self.getAllProviders().then(providers => {
-          let callId = null; 
-          for (const provider of providers) {
-            callId = findProviderCallId(link, provider);
-            if (callId) {
-              process.resolve(callId);
-              break;
+    this.hasPermissions = function(userId, providerType) {
+      if (cometd) {
+        var process = $.Deferred();
+        var callProps = cometdParams({
+          command : "has_user_permissions",
+          id : userId,
+          provider : providerType
+        });
+        cometd.remoteCall("/webconferencing/calls", callProps, function(response) {
+          var result = tryParseJson(response);
+          if (response.successful) {
+            if (result.allowed) {
+              process.resolve();
+            } else {
+              process.reject();
             }
+          } else {
+            log.warn("Failed to read user permissions for " + userId + " to " + providerType, result);
+            process.reject(result);
           }
-          if (!callId) {
-            process.reject("Cannot find call ID for link: " + link);
-          }
-        }).catch(err => process.fail(err));        
+        });
+        return process.promise();
+      } else {
+        log.trace("Getting user permissions reqires CometD. Was user: " + id);
+        return $.Deferred().reject("CometD required").promise();
       }
-      return process.promise();
     };
-		
+    
 		/**
 		 * Find identities by name in org service. Includes groups and users.
 		 */
@@ -1427,7 +1505,7 @@
      * Check if user is invited to the call by provided inviteId.
      * Retuns JSON {"allowed" : true} or {"allowed" : false}
      */
-    this.checkInvite = function(id, inviteId, userId) {
+    this.checkInvite = function(id, inviteId) {
       if (cometd) {
         var process = $.Deferred();
         var callProps = cometdParams({
@@ -1556,19 +1634,22 @@
           cometd.remoteCall("/webconferencing/calls", callProps, function(response) {
             var result = tryParseJson(response);
             if (response.successful) {
-              self.getProvider(stateInfo.provider)
-                .then(provider => {
+              if (info) {
+                self.getProvider(info.provider).then(provider => {
                   if (provider.getCallUrl) {
                     result.url = provider.getCallUrl(id);
                   }
                   process.resolve(result);
                 });
+              } else {
+                process.resolve(result);
+              }
             } else {
               process.reject(result);
             }
           });
         }
-				// Recognize method params: differentiate second param as a state string (to update only the call state) 
+        // Recognize method params: differentiate second param as a state string (to update only the call state) 
         // or a callInfo object to update the whole call
         if (stateInfo) {
           if (typeof stateInfo === "object") {
@@ -1872,6 +1953,8 @@
 		}
 		this.getProviderConfig = getProviderConfig; // this will ask server
 		this.postProviderConfig = postProviderConfig;
+    this.getProviderPermissions = getProviderPermissions;
+    this.postProviderPermissions = postProviderPermissions;
 		
 		this.getUserStatus = getUserStatus;
 		
@@ -1982,17 +2065,20 @@
       return localContext.promise();
     }
 
+    /**
+     * Return all available providers (their modules).
+     */
     this.getAllProviders = async function() {
-      const webConferencing = this;
       const allProviders = $.Deferred();
       contextInitializer.then(() => {
-        webConferencing.getProvidersConfig().then((providersConfig) => {
-          const providersTypes = providersConfig.map(provider => provider.type);
-          Promise.all(
-            providersTypes.map(type => webConferencing.getProvider(type))
-          ).then(providers => {
+        self.getProvidersConfig().then(allConfigs => {
+          Promise.all(allConfigs.map(config => self.getProvider(config.type))).then(providers => {
             allProviders.resolve(providers);
+          }).catch(err => {
+            allProviders.reject(err);
           });
+        }).catch(err => {
+          allProviders.reject(err);
         });
       });
       return allProviders.promise();

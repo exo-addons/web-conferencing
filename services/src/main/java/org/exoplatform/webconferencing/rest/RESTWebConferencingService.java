@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2003-2017 eXo Platform SAS.
+ * Copyright (C) 2003-2021 eXo Platform SAS.
  *
  * This is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as
@@ -18,6 +18,8 @@
  */
 package org.exoplatform.webconferencing.rest;
 
+import java.util.Arrays;
+import java.util.List;
 import java.util.Set;
 
 import javax.annotation.security.RolesAllowed;
@@ -43,6 +45,7 @@ import org.exoplatform.services.security.ConversationState;
 import org.exoplatform.webconferencing.CallProviderConfiguration;
 import org.exoplatform.webconferencing.GroupInfo;
 import org.exoplatform.webconferencing.IdentityStateException;
+import org.exoplatform.webconferencing.PermissionData;
 import org.exoplatform.webconferencing.UserInfo;
 import org.exoplatform.webconferencing.WebConferencingService;
 import org.exoplatform.webconferencing.client.ErrorInfo;
@@ -182,6 +185,88 @@ public class RESTWebConferencingService implements ResourceContainer {
         return Response.serverError()
                        .cacheControl(cacheControl)
                        .entity(ErrorInfo.serverError("Error saving provider configuration"))
+                       .build();
+      }
+    } else {
+      return Response.status(Status.UNAUTHORIZED)
+                     .cacheControl(cacheControl)
+                     .entity(ErrorInfo.accessError("Unauthorized user"))
+                     .build();
+    }
+  }
+
+  @GET
+  @RolesAllowed("administrators")
+  @Path("/provider/{type}/permissions")
+  @ApiOperation(value = "Read a call provider permissions", httpMethod = "GET", response = List.class, notes = "Use this method to read a call provider permissions. This operation only avalable to Administrator user.")
+  @ApiResponses(value = {
+      @ApiResponse(code = 200, message = "Request fulfilled. Provider permissions list returned.", response = List.class),
+      @ApiResponse(code = 401, message = "Unauthorized user (conversation state not present). Error code: " + ErrorInfo.CODE_ACCESS_ERROR), 
+      @ApiResponse(code = 404, message = "Provider not found. Error code: " + ErrorInfo.CODE_NOT_FOUND_ERROR),
+      @ApiResponse(code = 500, message = "Internal server error due to data encoding or formatting result to JSON. Error code: " + ErrorInfo.CODE_SERVER_ERROR) })
+  public Response getProviderPermissions(@Context UriInfo uriInfo,
+                                         @Context HttpServletRequest request,
+                                         @PathParam("type") String type) {
+    ConversationState convo = ConversationState.getCurrent();
+    if (convo != null) {
+      String currentUserName = convo.getIdentity().getUserId();
+      try {
+        List<PermissionData> permissions = webConferencing.getProviderPermissions(type, request.getLocale());
+        if (permissions == null) {
+          return Response.status(Status.NOT_FOUND)
+                         .cacheControl(cacheControl)
+                         .entity(ErrorInfo.notFoundError("Provider or configuration not found"))
+                         .build();
+        }
+        return Response.ok().cacheControl(cacheControl).entity(permissions).build();
+      } catch (Throwable e) {
+        LOG.error("Error getting provider permissions for '" + type + "' by '" + currentUserName + "'", e);
+        return Response.serverError()
+                       .cacheControl(cacheControl)
+                       .entity(ErrorInfo.serverError("Error getting provider permissions"))
+                       .build();
+      }
+    } else {
+      return Response.status(Status.UNAUTHORIZED)
+                     .cacheControl(cacheControl)
+                     .entity(ErrorInfo.accessError("Unauthorized user"))
+                     .build();
+    }
+  }
+
+  @POST
+  @RolesAllowed("administrators")
+  @Path("/provider/{type}/permissions")
+  @ApiOperation(value = "Update call provider permissions", httpMethod = "POST", response = CallProviderConfiguration.class, notes = "Use this method to update a call provider configuration's permissions. This operation only avalable to Administrator user.")
+  @ApiResponses(value = {
+      @ApiResponse(code = 200, message = "Request fulfilled. Provider configuration object returned.", response = CallProviderConfiguration.class),
+      @ApiResponse(code = 401, message = "Unauthorized user (conversation state not present). Error code: " + ErrorInfo.CODE_ACCESS_ERROR), 
+      @ApiResponse(code = 404, message = "Provider not found. Error code: " + ErrorInfo.CODE_NOT_FOUND_ERROR),
+      @ApiResponse(code = 500, message = "Internal server error due to data encoding or formatting result to JSON. Error code: " + ErrorInfo.CODE_SERVER_ERROR) })
+  public Response postProviderPermissions(@Context UriInfo uriInfo,
+                                          @Context HttpServletRequest request,
+                                          @PathParam("type") String type,
+                                          @FormParam("permissions") String permissions) {
+    ConversationState convo = ConversationState.getCurrent();
+    if (convo != null) {
+      String currentUserName = convo.getIdentity().getUserId();
+      try {
+        CallProviderConfiguration conf = webConferencing.getProviderConfiguration(type, request.getLocale());
+        if (conf != null) {
+          conf.setPermissions(Arrays.asList((permissions.split(" "))));
+          webConferencing.saveProviderConfiguration(conf);
+          return Response.ok().cacheControl(cacheControl).entity(conf).build();
+        } else {
+          return Response.status(Status.NOT_FOUND)
+                         .cacheControl(cacheControl)
+                         .entity(ErrorInfo.notFoundError("Provider or configuration not found"))
+                         .build();
+        }
+      } catch (Throwable e) {
+        LOG.error("Error saving provider permissions for '" + type + "' by '" + currentUserName + "'", e);
+        return Response.serverError()
+                       .cacheControl(cacheControl)
+                       .entity(ErrorInfo.serverError("Error saving provider permissions"))
                        .build();
       }
     } else {

@@ -176,6 +176,9 @@ public class CometdWebConferencingService implements Startable {
   /** The Constant COMMAND_GET_ORG_IDENTITIES. */
   public static final String             COMMAND_GET_ORG_IDENTITIES            = "get_org_identities";
   
+  /** The Constant COMMAND_HAS_USER_PERMISSIONS. */
+  public static final String             COMMAND_HAS_USER_PERMISSIONS            = "has_user_permissions";
+  
   /** The Constant EVENT_CALL_LEAVED. */
   public static final String             EVENT_CALL_LEAVED = "call_leaved";
   
@@ -2004,8 +2007,8 @@ public class CometdWebConferencingService implements Startable {
                             List<IdentityData> identities = webConferencing.findGroupsAndUsers(name);
                             caller.result(asJSON(identities.toArray()));
                           } catch (Throwable e) {
-                            LOG.error("Error adding guest to call '" + id + "' by '" + currentUserId + "'", e);
-                            caller.failure(ErrorInfo.serverError("Error adding guest to call").asJSON());
+                            LOG.error("Error finding identities by '" + id + "' provider by '" + currentUserId + "'", e);
+                            caller.failure(ErrorInfo.serverError("Error finding identities").asJSON());
                           }
                         } else if (COMMAND_GET_CALLS_STATE.equals(command)) {
                           if (id.equals(currentUserId)) { // id it's user name for this command
@@ -2019,6 +2022,16 @@ public class CometdWebConferencingService implements Startable {
                           } else {
                             // Don't let read other user calls
                             caller.failure(ErrorInfo.clientError("Wrong request parameters: id (does not match)").asJSON());
+                          }
+                        } else if (COMMAND_HAS_USER_PERMISSIONS.equals(command)) {
+                          // id it's a target user name to check permissions
+                          String providerType = asString(arguments.get("provider"));
+                          try {
+                            boolean allowed = webConferencing.hasUserPermissions(id, providerType);
+                            caller.result("{\"allowed\" : " + allowed + "}");
+                          } catch (Throwable e) {
+                            LOG.error("Error checking user permissions for user '" + id + "' and provider '" + providerType + "'", e);
+                            caller.failure(ErrorInfo.serverError("Error checking user permissions").asJSON());
                           }
                         } else {
                           LOG.warn("Unknown call command " + command + " for '" + id + "' from '" + currentUserId + "'");

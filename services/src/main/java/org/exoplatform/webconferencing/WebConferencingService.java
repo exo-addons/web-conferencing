@@ -52,6 +52,7 @@ import javax.servlet.http.HttpServletRequest;
 
 import org.apache.commons.fileupload.FileUploadException;
 import org.apache.commons.lang.RandomStringUtils;
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 import org.picocontainer.Startable;
@@ -400,7 +401,7 @@ public class WebConferencingService implements Startable {
 
   /** The Link manager. */
   protected final LinkManager                        linkManager;
-
+  
   /**
    * Checks is ID valid (not null, not empty and not longer of {@value #ID_MAX_LENGTH} chars).
    *
@@ -597,6 +598,43 @@ public class WebConferencingService implements Startable {
    */
   public String getSecretKey() {
     return this.secretKey;
+  }
+  
+  /**
+   * Checks for user permissions to use a given provider.
+   *
+   * @param userId the user id
+   * @param providerType the provider type
+   * @return true, if successful
+   */
+  public boolean hasUserPermissions(String userId, String providerType) {
+    CallProviderConfiguration config = getProviderConfiguration(providerType, Locale.getDefault());
+    if (config != null) {
+      if (config.getPermissions().size() == 0 || ALL_USERS.equals(config.getPermissions().get(0))) {
+        // If not particular permissions set or permitted to all (*)
+        return true;
+      }
+      org.exoplatform.services.security.Identity userIdentity = userIdentity(userId);
+      if (userIdentity != null) {
+        for (String permission : config.getPermissions()) {
+          int splitIndex = permission.indexOf(":");
+          if (splitIndex < 0) {
+            // user permission
+            if (userId.equals(permission)) {
+              return true;
+            }
+          } else if (splitIndex < permission.length() - 1) {
+            // group (space etc)
+            String membership = permission.substring(0, splitIndex);
+            String groupId = permission.substring(splitIndex + 1);
+            if (userIdentity.isMemberOf(groupId, membership)) {
+              return true;
+            }
+          }
+        }
+      } // otherwise, we think no permissions this userId should have
+    } // no provider config means not permitted
+    return false;
   }
 
   /**
@@ -2343,7 +2381,6 @@ public class WebConferencingService implements Startable {
    */
   private ConversationState createState(String userId) {
     org.exoplatform.services.security.Identity userIdentity = userIdentity(userId);
-
     if (userIdentity != null) {
       ConversationState state = new ConversationState(userIdentity);
       // Keep subject as attribute in ConversationState.
@@ -2364,8 +2401,7 @@ public class WebConferencingService implements Startable {
   protected org.exoplatform.services.security.Identity userIdentity(String userId) {
     org.exoplatform.services.security.Identity userIdentity = identityRegistry.getIdentity(userId);
     if (userIdentity == null) {
-      // We create user identity by authenticator, but not register it in the
-      // registry
+      // We create user identity by authenticator, but not register it in the registry
       try {
         if (LOG.isDebugEnabled()) {
           LOG.debug("User identity not registered, trying to create it for: " + userId);
@@ -2441,13 +2477,22 @@ public class WebConferencingService implements Startable {
    * @throws JSONException the JSON exception
    */
   protected CallProviderConfiguration jsonToProviderConfig(JSONObject json) throws JSONException {
+    CallProviderConfiguration conf = new CallProviderConfiguration();
     String type = json.getString("type");
     boolean active = json.getBoolean("active");
-
-    CallProviderConfiguration conf = new CallProviderConfiguration();
     conf.setActive(active);
     conf.setType(type);
-
+    JSONArray jsonPermissions = json.optJSONArray("permissions");
+    List<String> permissions = new ArrayList<>();
+    if (jsonPermissions != null) {
+      for (int i = 0; i < jsonPermissions.length(); i++) {
+        permissions.add(jsonPermissions.getString(i));
+      }
+    }
+    if (permissions.isEmpty()) {
+      permissions.add(ALL_USERS);
+    }
+    conf.setPermissions(permissions);
     return conf;
   }
 
@@ -2493,10 +2538,9 @@ public class WebConferencingService implements Startable {
    */
   protected JSONObject providerConfigToJson(CallProviderConfiguration conf) throws JSONException {
     JSONObject json = new JSONObject();
-
     json.put("type", conf.getType());
     json.put("active", conf.isActive());
-
+    json.put("permissions", conf.getPermissions());
     return json;
   }
 
@@ -3855,4 +3899,61 @@ public class WebConferencingService implements Startable {
 
   // <<<<<<< Call storage: wrappers to catch JPA exceptions
 
+  /**
+   * Gets provider permissions.
+   *
+   * @param type the type
+   * @param locale the locale
+   * @return the provider permissions
+   */
+  public List<PermissionData> getProviderPermissions(String type, Locale locale) throws WebConferencingException {
+    CallProviderConfiguration conf = getProviderConfiguration(type, locale);
+    if (conf != null) {
+      List<PermissionData> permissions = new ArrayList<>(conf.getPermissions().size());
+      for (String permission : conf.getPermissions()) {
+        PermissionData permissionData = new PermissionData(permission);
+        if (!ALL_USERS.equals(permission)) {
+          int splitIndex = permission.indexOf(":");
+          if (splitIndex < 0) {
+            // user permission
+            Identity identity = socialIdentityManager.getOrCreateIdentity(OrganizationIdentityProvider.NAME, permission);
+            if (identity != null) {
+              Profile profile = identity.getProfile();
+              String avatarUrl = profile.getAvatarUrl() != null ? profile.getAvatarUrl() : LinkProvider.PROFILE_DEFAULT_AVATAR_URL;
+              permissionData.setDisplayName(profile.getFullName());
+              permissionData.setAvatarUrl(avatarUrl);
+            }
+          } else if (splitIndex < permission.length() - 1) {
+            // group (space etc)
+            String groupId = permission.substring(splitIndex + 1);
+            Space space = spaceService.getSpaceByGroupId(groupId);
+            if (space != null) {
+              String displayName = space.getDisplayName();
+              String avatarUrl = space != null && space.getAvatarUrl() != null ? space.getAvatarUrl()
+                                                                               : LinkProvider.SPACE_DEFAULT_AVATAR_URL;
+              permissionData.setDisplayName(displayName);
+              permissionData.setAvatarUrl(avatarUrl);
+            } else {
+              // group
+              Group group = null;
+              try {
+                group = organization.getGroupHandler().findGroupById(groupId);
+              } catch (Exception e) {
+                LOG.error("Cannot get group by id {}. {}", groupId, e.getMessage());
+              }
+              if (group != null) {
+                String displayName = group.getLabel();
+                String avatarUrl = LinkProvider.SPACE_DEFAULT_AVATAR_URL;
+                permissionData.setDisplayName(displayName);
+                permissionData.setAvatarUrl(avatarUrl);
+              }
+            }
+          }
+        }
+        permissions.add(permissionData);
+      }
+      return permissions;
+    }
+    return  null;
+  }
 }
